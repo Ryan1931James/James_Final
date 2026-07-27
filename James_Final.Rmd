@@ -1,0 +1,524 @@
+---
+title: "James RBIF 125 Final"
+author: "Author: James Hinojosa"
+date: "Last update: `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Final}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+
+
+```{r, include = FALSE}
+
+# Sets home directory 
+homedir <- "C:/Users/ryan1/Desktop/Brandeis University/Courses/RBIF-125 Bioinformatics Software Engineering and AI ML/Week 8/Final_Project/" 
+
+```
+
+
+# Download data set from GEO 
+The code below will define a function to download a data set from the Gene Expression Omnibus (GEO). This code provides a way to download either an Array or RNAseq dataset. 
+
+```{r 1, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Installs necessary packages if not already installed
+# BiocManager::install("DESeq2")
+# BiocManager::install("limma")
+# install.packages("data.table")
+# BiocManager::install("sva")
+# install.packages('R.utils')
+library(DESeq2); library(limma); library(data.table); library(ggplot2); library(sva); library(R.utils)
+
+# Creates function to download data from GEO
+GEODataDownload <- function(DS, gpl, gsm, PlateAnnotInfo, GenerateMetaData, Technology){
+  library(DESeq2); library(limma); library(data.table)
+  
+  # Defines downloading an "Array" dataset
+  if(Technology == "Array"){
+    gset <- getGEO(DS)
+    if(length(gset) > 1) idx <- grep(gpl, attr(gset, "names")) else idx <- 1
+    gset <- gset[[idx]]
+    fvarLabels(gset) <- make.names(fvarLabels(gset))
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    
+    # Sets up raw names
+    sml <- c()
+    for(i in 1:nchar(gsms)){ sml[i] <- substr(gsms,i,i)}
+    ex <- exprs(gset)
+    qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+    LogC <- (qx[5] > 100) ||
+      (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+      (qx[2] > 0 && qx[2] < 1 && qx[4] < 2)
+    if(LogC){ ex[which(ex <= 0)] <- NaN
+    exprs(gset) <- log2(ex) }
+    sml <- paste("G", sml, sep="")
+    f1 <- as.factor(sml)
+    gset$description2 <- f1
+    design <- model.matrix(~description2 + 0, gset)
+    colnames(design) <- levels(f1)
+    fit <- lmFit(gset, design)
+    cont.matrix <- makeContrasts(G1-G0, levels = design)
+    fit2 <- contrasts.fit(fit, cont.matrix)
+    fit2 <- eBayes(fit2, 0.01)
+    tT <- topTable(fit2, adjust="fdr", sort.by = "B", number = 25000000000)
+    
+    # Subsets data
+    ex2 <- data.table(subset(tT, select=c("ID", "logFC", "P.Value", "adj.P.Val")))
+    ex2$ID <- as.character(ex2$ID)
+    
+    # Annotates with gene names
+    plat <- PlateAnnotInfo[GPLID == gpl,][,!"GPLID", with = FALSE]
+    if(nrow(plat) == 0){ print(paste("There is no annotation information available for", gpl)) }
+    plat$ID <- as.character(plat$ID)
+    plat <- plat[!duplicated(plat$ID),]
+    ex2 <- merge(plat, ex2, by = "ID")
+    ex2$ID <- as.character(ex2$ID)
+    exraw <- data.table(ex)
+    exraw$ID <- as.character(rownames(ex))
+    
+    # Annotates raw data with gene names
+    ex2 <- merge(ex2, exraw, by = "ID")
+    
+    # Generates Metadata
+    Pdat <- pData(gset)
+    
+    # Adds Metadata
+    Pdat <- as.data.table(Pdat)
+    return(list(Data = ex2, MetaData = Pdat))
+  }
+  
+  # Defines downloading an "RNAseq" dataset
+  if(Technology == "RNAseq"){
+    ACC <- paste("acc=", DS, sep = "")
+    file <- paste("file=", DS, "_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep = "")
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    
+    # Sets up DEG names
+    urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+    path <- paste(urld, ACC, file, sep="&");
+    tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+    exraw <- tbl 
+    apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+    annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+    rownames(annot) <- annot$GeneID
+    sml <- strsplit(gsms, split="")[[1]]
+    sel <- which(sml != "X")
+    sml <- sml[sel]
+    tbl <- tbl[ ,sel]
+    gs <- factor(sml)
+    groups <- make.names(c("Ctrl", "Tx"))
+    levels(gs) <- groups
+    sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+    keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+    tbl <- tbl[keep, ]
+    ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+    ds <- DESeq(ds, test="Wald", sfType="poscount")
+    r <- results(ds, contrast=c("Group", groups[2], groups[1]), alpha=0.05, pAdjustMethod ="fdr")
+    tT <- r[order(r$padj)[1:length(r$padj)],]
+    tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+    tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+    
+    # Subsets data
+    ex2 <- data.table(subset(tT, select=c("GeneID", "Symbol", "Description", "log2FoldChange", "pvalue", "padj")))
+    
+    # Adjusts column names
+    setnames(ex2, c("GeneID", "Symbol", "Description"), c("ENTREZID", "SYMBOL", "GENENAME"))
+    
+    # Gets raw data
+    GeneID <- as.integer(rownames(exraw))
+    exraw <- as.data.table(exraw)
+    
+    # Updates column names
+    exraw$ENTREZID <- GeneID
+    
+    # Merges FC and raw data together
+    mer <- merge(ex2, exraw, by = "ENTREZID")
+    return(mer)
+  }
+}
+
+```
+
+With this function now defined, a data set from GEO can now be downloaded using the code below. This code downloaded a GEO RNAseq dataset that evaluated the differences in gene expression levels of the nucleus accumbens between cigarette smokers and non-smokers [1] and was saved as `data`. 
+
+```{r 2, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Downloads smokers vs non-smokers data set
+data <- GEODataDownload(DS = "GSE171936",
+                              gpl = "GPL21290",
+                              gsm = "00000000110100000000100001000000000110001010110111010000000001010001000001110010001010000100011100000000000000001110100110000000011000000001000000000010000000000001000000000001010000000001100000000000001001X1X11100010000000",
+                              PlateAnnotInfo = "Only needed if the data was generated using MicroArrays",
+                              GenerateMetaData = "Only needed if the data was generated using MicroArrays",
+                              Technology = "RNAseq")
+
+# Confirms successful download of dataset by showing first three rows of data set
+data.table(head(as.data.frame(data),3), filter = 'top', options = list(pageLength = 10, scrollX = TRUE, scrollY = "400px", autoWidth = TRUE))
+
+```
+
+The metadata for this data set was downloaded from the GEO website and saved to my working directory. This metadata csv file was loaded into this session using the code below.
+
+```{r 3, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Loads meta data csv file into session
+DT <- fread("metadata.csv")
+
+# Displays first few lines of meta data csv file
+head(DT)
+
+```
+
+
+# Exploratory Analysis
+With data set and meta data loaded into the session, exploratory analysis can begin using the code below. First we must evaluate the data set for any missing information and adjust accordingly.
+
+```{r 4, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Isolates sample name, current smoking status, and age at death from meta data 
+meta <- DT[, c("GEO_Accession (exp)", "current_smoking_status", "age_at_death")]
+meta <- unique(meta)
+
+# Identifies meta data for control samples
+controls <- meta[meta$current_smoking_status == "control"]
+head(controls)
+dim(controls)
+
+# Identifies meta data for test samples
+cases <- meta[meta$current_smoking_status == "case"]
+head(cases)
+dim(cases)
+
+# Identifies samples with unknown smoking status
+unknown.status <- meta[meta$current_smoking_status == "indeterminant"]
+unknown.status
+dim(unknown.status)
+
+# Identifies samples with unknown age
+unknown.age <- meta[is.na(meta$age_at_death),]
+unknown.age
+dim(unknown.age)
+
+# Isolates sample names with incomplete information
+unknowns <- unknown.status$`GEO_Accession (exp)`
+
+# Identifies columns containing data from samples with incomplete information
+unknown_1 <- which(colnames(data) == unknowns[1])
+unknown_2 <- which(colnames(data) == unknowns[2])
+unknown_1
+unknown_2
+
+# Removes samples with unknown smoking status
+data.filtered <- data[, -c(213,215)]
+
+# Confirms samples with unknown smoking status are removed
+head(data[, c(212:216)])
+head(data.filtered[, c(212:216)])
+
+# Removes samples with unknown smoking status from meta data
+meta <- meta[meta$current_smoking_status != "indeterminant"]
+
+```
+
+Here we see our data contains 171 control samples and 50 test samples. We also see that two samples, GSM5237811 and GSM5237813, have an unknown smoking status and an unknown age. Since we are interested in smoking status, we can remove these two samples. As shown in the code above, we identified the columns these samples occupy in our `data` and remove them, saving this new data set as `data.filtered`. We also update the meta data information to remove these two samples we are not interested in. 
+
+## Age Comparison Between Groups
+With our data filtered, we can compare the ages between smokers and non-smokers 
+
+```{r 5, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Finds average age at death for controls and test samples
+mean(controls$age_at_death)
+mean(cases$age_at_death)
+median(controls$age_at_death)
+median(cases$age_at_death)
+
+# Plots ages differences between controls and test samples
+boxplot(controls$age_at_death, cases$age_at_death,
+        main = "Controls vs Tests Ages at Death",
+        names = c("Controls", "Tests"),
+        col = c("orange", "darkgreen"))
+
+# Isolates ages and smoking status 
+ages <- meta$age_at_death
+status <- meta$current_smoking_status
+
+# Evaluates difference in ages between groups
+t.test(ages ~ status, data = meta)
+
+```
+
+Here we see that the controls in this data set have a slightly lower average age at death, ~45.8 years old, compared to the test samples, ~47.9 years old. However, the median age of the controls is slightly higher, ~48.8 years old, compared to the test samples, ~47.16 years old. Performing a t-test on these samples confirms that there is no statistically significant difference in the age at death between smokers and non-smokers in this data set. 
+
+## Normalization of Expression Data
+Now let's explore the expression data. We can first evaluate if normalization is necessary for our data set. 
+
+```{r 6, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Isolates all expression data
+all_expr_data <- data.filtered[, -c(1:6)]
+
+# Isolates expression data for controls
+control_expr_data <- subset(all_expr_data, select = controls$`GEO_Accession (exp)`)
+
+# Isolates expression data for test samples
+case_expr_data <- subset(all_expr_data, select = cases$`GEO_Accession (exp)`)
+
+# Converts isolated expression data to a true numeric matrix
+expr_matrix <- as.matrix(all_expr_data)
+
+# Sets the row names as the  ENTREZID
+rownames(expr_matrix) <- data.filtered$ENTREZID  
+
+# Ensures meta dataframe rows align with the columns of expr_matrix
+meta_df <- as.data.frame(meta)
+rownames(meta_df) <- meta_df$`GEO_Accession (exp)`
+meta_df <- meta_df[colnames(expr_matrix), ] 
+
+# Reconstructs Log2 transformations for evaluation of data
+logged_counts <- log2(expr_matrix + 1)
+
+# Evaluates if expression data needs normalization
+boxplot(logged_counts, main="Sample Distributions Prior to Normalization", 
+        las=2, outline=FALSE, col="skyblue", xlab="Samples", ylab="Log2 Raw Counts")
+
+
+# Converts isolated data to a strict numeric matrix for normalization
+count_matrix <- as.matrix(all_expr_data)
+rownames(count_matrix) <- data.filtered$ENTREZID
+
+# Ensures meta dataframe rows align with the columns of count_matrix
+meta_df <- as.data.frame(meta)
+rownames(meta_df) <- meta_df$`GEO_Accession (exp)`
+meta_df <- meta_df[colnames(count_matrix), ]
+
+# Performs structural RNA-seq normalization (VST)
+dds <- DESeqDataSetFromMatrix(countData = count_matrix, 
+                              colData = meta_df, 
+                              design = ~ current_smoking_status)
+dds <- estimateSizeFactors(dds)
+vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
+norm_counts <- assay(vsd) 
+
+# Evaluates if normalization of data was appropriate
+boxplot(norm_counts, main="Sample Distributions of Normalized Data", 
+        las=2, outline=FALSE, col="skyblue", xlab="Samples", ylab="Log2 Norm Counts")
+
+```
+
+Here we see that the expression data does appear to be experiencing batch effects or technical variations prior to normalization. Once the data is normalized using VST normalization, our sample distributions no longer appear to be influenced by any potential batch effects! 
+
+## Principle Component Analysis
+With the data now normalized, we can perform PCA on the normalized data set to determine if specific data attributes result in any clustering. 
+
+```{r 7, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Calculates gene variance 
+rv <- apply(norm_counts, 1, var)
+
+# Performs PCA on all genes in normalized data set
+rv <- order(rv, decreasing = TRUE)
+pca_res <- prcomp(t(norm_counts[rv, ]))
+
+# Builds PCA data frame using metadata and first two principle components
+pca_df <- data.frame(
+  PC1 = pca_res$x[,1],
+  PC2 = pca_res$x[,2],
+  Smoking_Status = as.factor(meta_df$current_smoking_status),
+  Age_at_Death   = as.numeric(meta_df$age_at_death)
+)
+
+# Checks variance in smoking status
+ggplot(pca_df, aes(x=PC1, y=PC2, color=Smoking_Status)) + 
+  geom_point(size=4, alpha=0.8) + theme_minimal() + 
+  labs(title="PCA: Colored by Smoking Status", x="PC1", y="PC2")
+
+# Checks variance in age at death
+ggplot(pca_df, aes(x=PC1, y=PC2, color=Age_at_Death)) + 
+  geom_point(size=4, alpha=0.8) + scale_color_viridis_c() + theme_minimal() + 
+  labs(title="PCA: Colored by Age at Death", x="PC1", y="PC2")
+
+# Identifies genes contributing most to variance
+loadings <- abs(pca_res$rotation[, 1])
+top_features <- sort(loadings, decreasing = TRUE)[1:10]
+top_features
+ENTREZIDs <- names(top_features)
+gene_names <- as.data.frame(data.filtered[, c("ENTREZID", "SYMBOL", "GENENAME"), with = FALSE])
+matched_symbols <- gene_names$SYMBOL[match(as.character(ENTREZIDs), as.character(gene_names$ENTREZID))]
+matched_details <- gene_names$GENENAME[match(as.character(ENTREZIDs), as.character(gene_names$ENTREZID))]
+print(matched_symbols)
+
+```
+
+Using variance from all genes in the data set for the PCA plot above, there appears to be no clustering based on smoking status or age with our normalized data. Additionally, when evaluating which genes contribute the most to variance, RPS29 is found to contribute the most variance in this data set. Additionally, the top 10 genes that contribute the most variance are:
+
+- RPS29      
+- XIST        
+- PWAR1       
+- P2RY12      
+- LOC107985363
+- LOC112268323
+- MUC6        
+- CX3CR1      
+- RPS4Y1 
+- LOC112268125
+
+# Differential Expression Analysis
+Now differential expression analysis can be performed on our data!
+
+```{r 8, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Prepares data for differential expression analysis
+meta_clean <- na.omit(meta_df)
+counts_clean <- count_matrix[, rownames(meta_clean)]
+counts_clean <- round(counts_clean)
+mode(counts_clean) <- "integer"
+
+# Forces smoking status to be a factor 
+meta_clean$current_smoking_status <- factor(meta_clean$current_smoking_status, 
+                                            levels = c("control", "case"))
+
+# Re-initializes DESeq dataset structure
+dds_analysis <- DESeqDataSetFromMatrix(countData = counts_clean,
+                                       colData = meta_clean,
+                                       design = ~ current_smoking_status)
+
+# Performs differential expression analysis based on smoking status
+dds_analysis <- DESeq(dds_analysis) 
+
+# Extracts contrast results table based on significance
+res <- results(dds_analysis, 
+               contrast = c("current_smoking_status", "case", "control"),
+               alpha = 0.05, 
+               pAdjustMethod = "fdr")
+
+# Corrects for bias in low count genes
+target_coef <- grep("current_smoking_status_case_vs_control", resultsNames(dds_analysis), value = TRUE)
+res_shrunk  <- lfcShrink(dds_analysis, 
+                         coef = target_coef, 
+                         type = "normal") 
+# Generate overall evaluation summary metrics
+summary(res_shrunk)
+
+```
+
+In the summary table we see that, of the 25,274 genes in this data set, approximately 60 of them were differentially expressed between smokers and non-smokers. Looking closer, 6 of these genes were up-regulated while 54 were down-regulated. Since these are just genes that were either up-regulated or down-regulated, they should be filtered down to only look at significantly differentially expressed genes.
+
+```{r 9, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Filter out the statistically significant genes
+sig_genes_df <- as.data.frame(res_shrunk)
+sig_genes_df$ENTREZID <- rownames(sig_genes_df)
+
+# Merge with gene annotations
+annotations <- as.data.frame(data.filtered[, c("ENTREZID", "SYMBOL", "GENENAME"), with = FALSE])
+sig_genes_annotated <- merge(sig_genes_df, annotations, by = "ENTREZID")
+
+# Filter for significance: FDR < 0.05 
+sig_final_table <- subset(sig_genes_annotated, padj < 0.05)
+
+# Print top 10 most significant differentially expressed genes
+head(sig_final_table[order(sig_final_table$padj), ], 10)
+
+```
+
+Focusing on just the statistically significant genes with an adjusted p-value < 0.05, we see that only 6 total genes meet this threshold:
+
+- glucosidase II alpha subunit (GANAB)
+- SEC61 translocon subunit alpha 1 (SEC61A1)
+- tRNA-Cys (TRNC)
+- tRNA-Tyr (TRNY)
+- surfeit 4 (SURF4)
+- methionyl-tRNA synthetase 1 (MARS1)
+
+Both TRNC and TRNY are up-regulated with log2 Fold Change of 0.1765037 and 0.1807380, respectively. They each have an adjusted p-value of ~0.025. The other four genes are down-regulated. GANAB has a log2 Fold change of -0.1400501, SEC61A1 is -0.1229403, SURF4 is -0.1263831, and MARS1 is -0.1177700. These down-regulated genes all had an adjusted p-value of ~0.025 except for MARS1 which had an adjusted p-value of ~0.039. 
+
+Let's check the fit of this model using the code below:
+
+```{r Q10, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Evaluates mathematical model fit quality
+plotDispEsts(dds_analysis, 
+             main = "Model Evaluation: Dispersion Estimates")
+
+```
+
+This diagnostic plot does not perfectly align with the model's predicted trajectory, however, this is to be expected with human models. Considering the data still follows the general path of the fitted line with no other unexpected shapes or trajectories in the plot, we can infer that the model works well with our data. 
+
+A volcano plot would provide excellent visualization to show our significant genes identified earlier. 
+
+```{r 11, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+# Prepares data for volcano plot
+volcano_data <- as.data.frame(res_shrunk)
+volcano_data$ENTREZID <- rownames(volcano_data)
+annotations_df <- as.data.frame(data.filtered[, c("ENTREZID", "SYMBOL"), with = FALSE])
+volcano_data <- merge(volcano_data, annotations_df, by = "ENTREZID", all.x = TRUE)
+
+# Sets threshold for significant genes
+volcano_data$Significance <- "Not Significant"
+volcano_data$Significance[volcano_data$padj < 0.05 & volcano_data$log2FoldChange > 0] <- "Upregulated in Smokers"
+volcano_data$Significance[volcano_data$padj < 0.05 & volcano_data$log2FoldChange < 0] <- "Downregulated in Smokers"
+volcano_data$SYMBOL[is.na(volcano_data$SYMBOL) | volcano_data$SYMBOL == ""] <- volcano_data$ENTREZID[is.na(volcano_data$SYMBOL) | volcano_data$SYMBOL == ""]
+sig_labels <- subset(volcano_data, padj < 0.05)
+
+# Generates Volcano Plot
+ggplot(volcano_data, aes(x = log2FoldChange, y = -log10(pvalue))) +
+  
+  # Sets visualization for non-significant genes
+  geom_point(data = subset(volcano_data, Significance == "Not Significant"), 
+             aes(color = Significance), alpha = 0.4, size = 1.5) +
+  
+  # Sets visualization for significant genes
+  geom_point(data = subset(volcano_data, Significance != "Not Significant"), 
+             aes(color = Significance), alpha = 1.0, size = 4) +
+  
+  # Sets colors based on significance
+  scale_color_manual(values = c("Not Significant" = "grey75", 
+                                "Upregulated in Smokers" = "firebrick2", 
+                                "Downregulated in Smokers" = "dodgerblue3")) +
+  geom_hline(yintercept = -log10(max(sig_labels$pvalue, na.rm=TRUE)), linetype = "dashed", col = "grey40") +
+  geom_vline(xintercept = 0, linetype = "dashed", col = "grey40") +
+  theme_minimal() +
+  labs(title = "Volcano Plot: Smokers vs Non-Smokers Profile",
+       x = "Log2 Fold Change (Effect Size)",
+       y = "-Log10 Raw P-Value") +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "bold", size = 14),
+        legend.title = element_blank())
+
+```
+
+In this volcano plot, we see that most genes in this data set are significantly differentially expressed. However, this plots shows 6 total points, representing genes, that are significant. We see 4 genes (GANAB, SEC61A1, SURF4, and MARS1) that are down-regulated in smokers and 2 genes (TRNC and TRNY) that are up-regulated in smokers. This suggests that addressing these 6 genes and better understanding their pathways may be a route for therapeutic interventions to address relapse risk in patients attempting to quit smoking.
+
+
+# References
+[1] Markunas CA, Semick SA, Quach BC, Tao R et al. Genome-wide DNA methylation differences in nucleus accumbens of smokers vs. nonsmokers. Neuropsychopharmacology 2021 Feb;46(3):554-560. PMID: 32731254
