@@ -33,14 +33,6 @@ text-align: justify}
 </style>
 
 
-```{r, include = FALSE}
-
-# Sets home directory 
-homedir <- "C:/Users/ryan1/Desktop/Brandeis University/Courses/RBIF-125 Bioinformatics Software Engineering and AI ML/Week 8/Final_Project/" 
-
-```
-
-
 # Download data set from GEO 
 The code below will define a function to download a data set from the Gene Expression Omnibus (GEO). This code provides a way to download either an Array or RNAseq dataset. 
 
