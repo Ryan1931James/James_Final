@@ -1,6 +1,6 @@
 # Differential Expression Analysis Report
 
-This repository contains the code and environment required to reproduce the differential expression analysis in `James_Final.Rmd`. 
+This repository contains the code and environment required to reproduce the differential expression analysis of the nucleus accumbens between cigarette smokers and non-smokers in `James_Final.Rmd`. 
 The environment is containerized using Docker and package versions are locked with `renv`.
 
 ## Prerequisites
