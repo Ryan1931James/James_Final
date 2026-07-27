@@ -19,7 +19,7 @@ The environment is containerized using Docker and package versions are locked wi
    docker build -t james-bioinformatics-report .
    ```
 
-3. **Run the analysis and extract the HTML report:**
+3. **Run the script and generate HTML report:**
    * **Windows (Command Prompt):**
      ```bash
      docker run --rm -v "%cd%:/project" -e RENV_PATHS_LIBRARY=/etc/R/renv/library james-bioinformatics-report
